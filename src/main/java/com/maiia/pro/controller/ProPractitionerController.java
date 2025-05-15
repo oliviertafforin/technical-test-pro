@@ -1,6 +1,7 @@
 package com.maiia.pro.controller;
 
-import com.maiia.pro.entity.Practitioner;
+import com.maiia.pro.dto.PractitionerDTO;
+import com.maiia.pro.mapper.PractitionerMapper;
 import com.maiia.pro.service.ProPractitionerService;
 import io.swagger.annotations.ApiOperation;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 @CrossOrigin
 @RestController
@@ -21,7 +23,9 @@ public class ProPractitionerController {
 
     @ApiOperation(value = "Get practitioners")
     @GetMapping
-    public List<Practitioner> getPractitioners() {
-        return proPractitionerService.findAll();
+    public List<PractitionerDTO> getPractitioners() {
+        return proPractitionerService.findAll()
+                .stream().map(PractitionerMapper::toDTO)
+                .collect(Collectors.toList());
     }
 }

@@ -8,7 +8,7 @@ public class AvailabilityMapper {
     public static AvailabilityDTO toDTO(Availability availability) {
         return AvailabilityDTO.builder()
                 .id(availability.getId())
-                .practitionerId(availability.getId())
+                .practitionerId(availability.getPractitionerId())
                 .startDate(availability.getStartDate())
                 .endDate(availability.getEndDate())
                 .build();

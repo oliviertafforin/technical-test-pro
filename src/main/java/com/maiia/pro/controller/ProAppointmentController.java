@@ -1,11 +1,14 @@
 package com.maiia.pro.controller;
 
 import com.maiia.pro.dto.AppointmentDTO;
+import com.maiia.pro.entity.Appointment;
 import com.maiia.pro.mapper.AppointmentMapper;
 import com.maiia.pro.service.ProAppointmentService;
 import io.swagger.annotations.ApiOperation;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -32,5 +35,13 @@ public class ProAppointmentController {
         return proAppointmentService.findAll().stream()
                 .map(AppointmentMapper::toDTO)
                 .collect(Collectors.toList());
+    }
+
+    @ApiOperation(value = "Create an appointment")
+    @PostMapping
+    public ResponseEntity<AppointmentDTO> createAppointment(@RequestBody AppointmentDTO appointmentDTO) {
+        Appointment appointment = proAppointmentService.createAppointment(AppointmentMapper.toEntity(appointmentDTO));
+        AppointmentDTO appointmentCreated = AppointmentMapper.toDTO(appointment);
+        return ResponseEntity.status(HttpStatus.CREATED).body(appointmentCreated);
     }
 }

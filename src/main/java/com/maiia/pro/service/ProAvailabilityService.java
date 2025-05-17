@@ -6,6 +6,9 @@ import com.maiia.pro.entity.TimeSlot;
 import com.maiia.pro.repository.AppointmentRepository;
 import com.maiia.pro.repository.AvailabilityRepository;
 import com.maiia.pro.repository.TimeSlotRepository;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.ToString;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.util.Streamable;
@@ -39,6 +42,9 @@ public class ProAvailabilityService {
         this.timeSlotRepository = timeSlotRepository;
     }
 
+    /**
+     * Find all availabilities for a practitioner
+     */
     public List<Availability> findByPractitionerId(Integer practitionerId) {
         if (practitionerId == null) {
             throw new IllegalArgumentException("Practitioner ID shouldn't be null");
@@ -46,25 +52,37 @@ public class ProAvailabilityService {
         return availabilityRepository.findByPractitionerId(practitionerId);
     }
 
+    /**
+     * Save a list of availabilities
+     */
     @Transactional
     public List<Availability> saveAvailabilities(final List<Availability> availabilities) {
         if (availabilities == null || availabilities.isEmpty()) {
             return Collections.emptyList();
         }
-        return Streamable.of(availabilityRepository.saveAll(availabilities)).toList();
+        Iterable<Availability> savedAvailabilities = availabilityRepository.saveAll(availabilities);
+        return Streamable.of(savedAvailabilities).toList();
     }
 
+    /**
+     * Generate availabilities for a practitioner based on their time slots
+     * and existing appointments
+     */
     public List<Availability> generateAvailabilities(Integer practitionerId) {
         if (practitionerId == null) {
             throw new IllegalArgumentException("Practitioner ID shouldn't be null");
         }
-        List<TimeSlot> timeSlots = timeSlotRepository.findByPractitionerId(practitionerId);
-        List<Appointment> appointments = appointmentRepository.findByPractitionerId(practitionerId);
-        List<TimeSlot> availableTimeSlots = getAvailableTimeSlots(timeSlots, appointments);
+        List<TimeInterval> timeSlots = timeSlotRepository.findByPractitionerId(practitionerId)
+                .stream()
+                .map(TimeInterval::new)
+                .collect(Collectors.toList());
+        List<TimeInterval> occupiedTimeIntervals = getOccupiedTimeIntervals(practitionerId);
+        List<TimeInterval> availableTimeSlots = getAvailableTimeSlots(timeSlots, occupiedTimeIntervals);
 
+        //create availabilities based on available time slots
         List<Availability> availabilities = availableTimeSlots.stream()
-                .filter(this::hasMinimumDuration)
-                .map(timeSlot -> splitTimeSlotIntoAvailabilities(timeSlot, practitionerId))
+                .filter(this::hasMinimumDurationForAnAppointment)
+                .map(timeInterval -> splitTimeIntervalIntoAvailabilities(timeInterval, practitionerId))
                 .flatMap(List::stream)
                 .collect(Collectors.toList());
 
@@ -72,109 +90,146 @@ public class ProAvailabilityService {
     }
 
     /**
-     * Check if the given timeslot is long enough to schedule at least one appointment, based on the default duration
+     * Gather all time constraints (appointments and existing availabilities) into a single TimeInterval list
      */
-    private boolean hasMinimumDuration(final TimeSlot timeSlot) {
-        return Duration.between(timeSlot.getStartDate(), timeSlot.getEndDate()).toMinutes() >= availabilityDuration;
+    public List<TimeInterval> getOccupiedTimeIntervals(Integer practitionerId) {
+            List<TimeInterval> unavailableTimeIntervals = new ArrayList<>();
+            // Add existing appointments
+            appointmentRepository.findByPractitionerId(practitionerId)
+                    .forEach(appointment -> unavailableTimeIntervals.add(new TimeInterval(appointment)));
+            // Add existing availabilities
+            availabilityRepository.findByPractitionerId(practitionerId)
+                    .forEach(availability -> unavailableTimeIntervals.add(new TimeInterval(availability)));
+            return unavailableTimeIntervals;
+        }
+
+    /**
+     * Check if the given TimeInterval is long enough to schedule at least one appointment, based on the default duration
+     */
+    private boolean hasMinimumDurationForAnAppointment(final TimeInterval timeInterval) {
+        return Duration.between(timeInterval.getStartDate(), timeInterval.getEndDate()).toMinutes() >= availabilityDuration;
     }
 
     /**
-     * Removes time intervals from a list of TimeSlot where appointments may have been scheduled
+     * Removes time intervals from a list of TimeInterval where appointments may have been scheduled
      *
-     * @param timeSlots    List of time slots to process
-     * @param appointments List of appointments that may overlap with time slots
-     * @return A list of time slots with no appointment overlaps
+     * @param timeSlots             List of time slots to process
+     * @param occupiedTimeIntervals List of time intervals that may overlap with time slots
+     * @return A list of time intervals with no existing appointment nor existing availabilities overlaps
      */
-    private List<TimeSlot> getAvailableTimeSlots(final List<TimeSlot> timeSlots, final List<Appointment> appointments) {
+    private List<TimeInterval> getAvailableTimeSlots(final List<TimeInterval> timeSlots, final List<TimeInterval> occupiedTimeIntervals) {
         if (timeSlots == null || timeSlots.isEmpty()) {
             return Collections.emptyList();
         }
-        if (appointments == null || appointments.isEmpty()) {
+        if (occupiedTimeIntervals == null || occupiedTimeIntervals.isEmpty()) {
             return new ArrayList<>(timeSlots);
         }
+
         return timeSlots.stream()
-                .map(timeSlot -> getAvailableTimeSlotsForSingle(timeSlot, appointments))
-                .flatMap(List::stream)
+                .flatMap(timeSlot -> getAvailableTimeSlotsForSingle(timeSlot, occupiedTimeIntervals).stream())
                 .collect(Collectors.toList());
     }
 
     /**
      * Removes time intervals from a single TimeSlot where appointments may have been scheduled
      *
-     * @param timeSlot     The time slot to process
-     * @param appointments List of appointments that may overlap with the time slot
+     * @param timeSlot              The time slot to process
+     * @param occupiedTimeIntervals List of time intervals that may overlap with the time slot
      * @return A list of time slots with no appointment overlaps
      */
-    private List<TimeSlot> getAvailableTimeSlotsForSingle(final TimeSlot timeSlot, final List<Appointment> appointments) {
-        final List<Appointment> overlappingAppointments = appointments.stream()
-                .filter(appointment -> isAppointmentOverlappingTimeSlot(appointment, timeSlot))
-                .sorted(Comparator.comparing(Appointment::getStartDate))
+    private List<TimeInterval> getAvailableTimeSlotsForSingle(final TimeInterval timeSlot, final List<TimeInterval> occupiedTimeIntervals) {
+        final List<TimeInterval> overlappingTimeIntervals = occupiedTimeIntervals.stream()
+                .filter(timeInterval -> areTimeIntervalsOverlapping(timeInterval, timeSlot))
+                .sorted(Comparator.comparing(TimeInterval::getStartDate))
                 .collect(Collectors.toList());
 
-        if (overlappingAppointments.isEmpty()) {
+        if (overlappingTimeIntervals.isEmpty()) {
             return Collections.singletonList(timeSlot);
         }
-        return calculateAvailableSlots(timeSlot, overlappingAppointments);
+        return calculateAvailableSlots(timeSlot, overlappingTimeIntervals);
     }
 
     /**
-     * @param timeSlot           the TimeSlot to process
-     * @param sortedAppointments list of Appointment sorted by starting date
+     * @param timeSlot            the TimeSlot to process
+     * @param sortedTimeIntervals list of TimeInterval sorted by starting date
      * @return a list of TimeSlot in the range of the given Timeslot, where no Appointments are scheduled yet
      */
-    private static List<TimeSlot> calculateAvailableSlots(TimeSlot timeSlot, List<Appointment> sortedAppointments) {
-        List<TimeSlot> availableSlots = new ArrayList<>();
+    private List<TimeInterval> calculateAvailableSlots(TimeInterval timeSlot, List<TimeInterval> sortedTimeIntervals) {
+        List<TimeInterval> availableSlots = new ArrayList<>();
         LocalDateTime currentDateTime = timeSlot.getStartDate();
 
-        for (Appointment appointment : sortedAppointments) {
+        for (TimeInterval timeInterval : sortedTimeIntervals) {
             // add a time slot between the current date and the start of the next appointment
-            if (appointment.getStartDate().isAfter(currentDateTime)) {
-                availableSlots.add(
-                        TimeSlot.builder()
-                                .startDate(currentDateTime)
-                                .endDate(appointment.getStartDate())
-                                .build());
+            if (timeInterval.getStartDate().isAfter(currentDateTime)) {
+                availableSlots.add(new TimeInterval(currentDateTime, timeInterval.getStartDate()));
             }
             // Update current time to the end of the appointment if it's later
-            if (appointment.getEndDate().isAfter(currentDateTime)) {
-                currentDateTime = appointment.getEndDate();
+            if (timeInterval.getEndDate().isAfter(currentDateTime)) {
+                currentDateTime = timeInterval.getEndDate();
             }
         }
 
         // add a last timeslot if the end of the last appointment happened before the end of the original timeslot
         if (currentDateTime.isBefore(timeSlot.getEndDate())) {
-            availableSlots.add(
-                    TimeSlot.builder()
-                            .startDate(currentDateTime)
-                            .endDate(timeSlot.getEndDate())
-                            .build());
+            availableSlots.add(new TimeInterval(currentDateTime, timeSlot.getEndDate()));
         }
         return availableSlots;
     }
 
     /**
-     * check if an appointment overlap with a given timeslot
+     * check if two time intervals overlaps
      */
-    private static boolean isAppointmentOverlappingTimeSlot(Appointment appointment, TimeSlot timeSlot) {
-        return appointment.getEndDate().isAfter(timeSlot.getStartDate()) &&
-                appointment.getStartDate().isBefore(timeSlot.getEndDate());
+    private boolean areTimeIntervalsOverlapping(TimeInterval timeInterval1, TimeInterval timeInterval2) {
+        return !timeInterval1.getEndDate().isBefore(timeInterval2.getStartDate()) &&
+                !timeInterval1.getStartDate().isAfter(timeInterval2.getEndDate());
     }
 
     /**
-     * Split a time slot into a maximum of availabilities, based on the default availability duration
+     * Split a time interval into a maximum of availabilities, based on the default availability duration
      */
-    private List<Availability> splitTimeSlotIntoAvailabilities(TimeSlot timeSlot, Integer practitionerId) {
+    private List<Availability> splitTimeIntervalIntoAvailabilities(TimeInterval timeInterval, Integer practitionerId) {
         List<Availability> availabilities = new ArrayList<>();
-        LocalDateTime current = timeSlot.getStartDate();
-        while (current.plusMinutes(availabilityDuration).compareTo(timeSlot.getEndDate()) <= 0) {
-            Availability availability = Availability.builder()
+        LocalDateTime current = timeInterval.getStartDate();
+        while (current.plusMinutes(availabilityDuration).compareTo(timeInterval.getEndDate()) <= 0) {
+            availabilities.add(Availability.builder()
                     .practitionerId(practitionerId)
                     .startDate(current)
                     .endDate(current.plusMinutes(availabilityDuration))
-                    .build();
-            availabilities.add(availability);
+                    .build());
             current = current.plusMinutes(availabilityDuration);
         }
         return availabilities;
+    }
+
+    /**
+     * Simple class to represent a time interval with start and end dates
+     */
+    @Getter
+    @Setter
+    @ToString
+    private static class TimeInterval {
+        private LocalDateTime startDate;
+        private LocalDateTime endDate;
+
+        public TimeInterval(LocalDateTime startDate, LocalDateTime endDate) {
+            this.startDate = startDate;
+            this.endDate = endDate;
+        }
+
+        public TimeInterval(Appointment appointment) {
+            this.endDate = appointment.getEndDate();
+            this.startDate = appointment.getStartDate();
+        }
+
+        public TimeInterval(Availability availability) {
+            this.endDate = availability.getEndDate();
+            this.startDate = availability.getStartDate();
+        }
+
+        public TimeInterval(TimeSlot timeSlot) {
+            this.endDate = timeSlot.getEndDate();
+            this.startDate = timeSlot.getStartDate();
+
+        }
     }
 }

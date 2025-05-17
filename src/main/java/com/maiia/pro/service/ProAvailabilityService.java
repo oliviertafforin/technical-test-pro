@@ -9,6 +9,8 @@ import com.maiia.pro.repository.TimeSlotRepository;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.util.Streamable;
@@ -29,6 +31,8 @@ public class ProAvailabilityService {
     @Value("${practitioner.appointment.duration:15}")
     private int availabilityDuration;
 
+    private static final Logger logger = LoggerFactory.getLogger(ProAvailabilityService.class);
+
     private final AvailabilityRepository availabilityRepository;
     private final AppointmentRepository appointmentRepository;
     private final TimeSlotRepository timeSlotRepository;
@@ -47,6 +51,7 @@ public class ProAvailabilityService {
      */
     public List<Availability> findByPractitionerId(Integer practitionerId) {
         if (practitionerId == null) {
+            logger.error("Cannot find availabilities: Practitioner ID is null");
             throw new IllegalArgumentException("Practitioner ID shouldn't be null");
         }
         return availabilityRepository.findByPractitionerId(practitionerId);
@@ -58,8 +63,10 @@ public class ProAvailabilityService {
     @Transactional
     public List<Availability> saveAvailabilities(final List<Availability> availabilities) {
         if (availabilities == null || availabilities.isEmpty()) {
+            logger.debug("No availabilities to save");
             return Collections.emptyList();
         }
+        logger.info("Saving {} availabilities", availabilities.size());
         Iterable<Availability> savedAvailabilities = availabilityRepository.saveAll(availabilities);
         return Streamable.of(savedAvailabilities).toList();
     }
@@ -70,8 +77,12 @@ public class ProAvailabilityService {
      */
     public List<Availability> generateAvailabilities(Integer practitionerId) {
         if (practitionerId == null) {
+            logger.error("Cannot generate availabilities: Practitioner ID is null");
             throw new IllegalArgumentException("Practitioner ID shouldn't be null");
         }
+
+        logger.info("Generating availabilities for practitioner ID: {}", practitionerId);
+
         List<TimeInterval> timeSlots = timeSlotRepository.findByPractitionerId(practitionerId)
                 .stream()
                 .map(TimeInterval::new)
@@ -85,7 +96,7 @@ public class ProAvailabilityService {
                 .map(timeInterval -> splitTimeIntervalIntoAvailabilities(timeInterval, practitionerId))
                 .flatMap(List::stream)
                 .collect(Collectors.toList());
-
+        logger.info("Found {} new availabilities for practitioner ID: {}", availabilities.size(), practitionerId);
         return saveAvailabilities(availabilities);
     }
 
@@ -93,15 +104,15 @@ public class ProAvailabilityService {
      * Gather all time constraints (appointments and existing availabilities) into a single TimeInterval list
      */
     public List<TimeInterval> getOccupiedTimeIntervals(Integer practitionerId) {
-            List<TimeInterval> unavailableTimeIntervals = new ArrayList<>();
-            // Add existing appointments
-            appointmentRepository.findByPractitionerId(practitionerId)
-                    .forEach(appointment -> unavailableTimeIntervals.add(new TimeInterval(appointment)));
-            // Add existing availabilities
-            availabilityRepository.findByPractitionerId(practitionerId)
-                    .forEach(availability -> unavailableTimeIntervals.add(new TimeInterval(availability)));
-            return unavailableTimeIntervals;
-        }
+        List<TimeInterval> unavailableTimeIntervals = new ArrayList<>();
+        // Add existing appointments
+        appointmentRepository.findByPractitionerId(practitionerId)
+                .forEach(appointment -> unavailableTimeIntervals.add(new TimeInterval(appointment)));
+        // Add existing availabilities
+        availabilityRepository.findByPractitionerId(practitionerId)
+                .forEach(availability -> unavailableTimeIntervals.add(new TimeInterval(availability)));
+        return unavailableTimeIntervals;
+    }
 
     /**
      * Check if the given TimeInterval is long enough to schedule at least one appointment, based on the default duration
